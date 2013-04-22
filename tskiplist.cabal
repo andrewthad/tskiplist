@@ -20,7 +20,12 @@ Homepage:       https://github.com/thaldyron/tskiplist
 
 
 build-type:     Simple                        
-cabal-version: >= 1.4
+cabal-version: >= 1.6
+
+source-repository head
+  type: git
+  location: https://github.com/thaldyron/tskiplist
+
 library
     ghc-options:        -Wall -fno-ignore-asserts -fwarn-incomplete-patterns
 
