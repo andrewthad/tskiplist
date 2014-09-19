@@ -42,6 +42,7 @@ type ForwardPtrs k a = TArray Int (Node k a)
 data TSkipList k a = TSkipList 
   { maxLevel    :: Int     -- ^ The maximal height of the skip list. 
   , probability :: Float   -- ^ Probability parameter.
+  , generator   :: TVar StdGen -- ^ Random level generator
   , curLevel    :: TVar Int  -- ^ The current max level.
   , listHead    :: ForwardPtrs k a -- ^ Pointer to the first element in the highest level.
   }
@@ -67,26 +68,27 @@ isNil _   = False
 -- | Creates a skiplist.
 newIO' :: Float  -- ^ Probability for choosing a new level
        -> Int    -- ^ Maximum number of levels. 
+       -> StdGen -- ^ Random number generator for the levels
        -> IO (TSkipList k a)
-newIO' p maxLvl = atomically $ new' p maxLvl
+newIO' p maxLvl gen = atomically $ new' p maxLvl gen
 
 -- | Creates a skiplist. Default values for storing up to 2^16 elements. 
 newIO :: IO (TSkipList k a)
-newIO = newIO' 0.5 16
-
-
+newIO = newIO' 0.5 16 (mkStdGen 42)
 
 -- | Creates a skiplist.
 new' :: Float  -- ^ Probability for choosing a new level
      -> Int    -- ^ Maximum number of levels
+     -> StdGen -- ^ Maximum number of levels
      -> STM (TSkipList k a)
-new' p maxLvl = 
-  TSkipList maxLvl p `liftM` newTVar 1 
-                        `ap` newForwardPtrs maxLvl
+new' p maxLvl gen = 
+  TSkipList maxLvl p `liftM` newTVar gen
+                     `ap` newTVar 1 
+                     `ap` newForwardPtrs maxLvl
 
 -- | Creates a skiplist. Default values for storing up to 2^16 elements. 
 new :: STM (TSkipList k a)
-new = new' 0.5 16
+new = new' 0.5 16 (mkStdGen 42)
 
 
 newForwardPtrs :: Int -> STM (ForwardPtrs k a)
@@ -95,15 +97,26 @@ newForwardPtrs maxLvl = newArray (1,maxLvl) Nil
 
 
 -- | Returns a randomly chosen level. Is used for inserting new elements.
--- For performance reasons, this function uses 'unsafePerformIO' to access the
--- random number generator. (It would be possible to store the random number
--- generator in a 'TVar' and thus be able to access it safely from within the
--- STM monad. This, however, might cause high contention among threads.)
+-- It has been changed to use a TVar in the TSkipList, and it avoids 
+-- calling unsafePerformIO.
+chooseLevel :: TSkipList k a -> STM Int
+chooseLevel tskip = do
+  x <- stmNextRandFloat $ generator tskip
+  return $ min (maxLevel tskip) $ 1 + truncate (log x / log (probability tskip))
+
+stmNextRandFloat :: TVar StdGen -> STM Float
+stmNextRandFloat var = do
+  g <- readTVar var
+  let (r,g') = randomR (0,1) g
+  writeTVar var g'
+  return r
+
+{-
 chooseLevel :: TSkipList k a -> Int
 chooseLevel tskip = 
   min (maxLevel tskip) $  1 + truncate (log x / log (probability tskip))
   where x = fst $ randomR (0.0, 1.0) (unsafePerformIO newStdGen)
-
+-}
 
 {-
 chooseLevel :: TSkipList k a -> STM Int
@@ -294,7 +307,7 @@ insert k a tskip = do
 
 insertNode :: (Ord k) => k -> Node k a -> TSkipList k a ->  STM ()
 insertNode k node tskip = do
-  let newLevel =  chooseLevel tskip
+  newLevel <- chooseLevel tskip
   -- Adapt current maximum level if necesary:
   curLvl   <- readTVar (curLevel tskip)
   when (curLvl < newLevel) $ 
